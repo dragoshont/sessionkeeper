@@ -1,0 +1,19 @@
+# Secrets / live session material — never commit.
+*.env
+.env
+*.session
+*.token
+secrets/
+/tmp/
+
+# Python (implementation lands in later versions)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.DS_Store
