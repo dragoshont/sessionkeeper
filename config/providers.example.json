@@ -1,0 +1,26 @@
+// Example sessionkeeper provider config. Copy to a real providers.json mounted
+// at /config/providers.json (e.g. from a ConfigMap). Comments are NOT valid
+// JSON — strip them in the real file.
+//
+// This generic adapter ("http_refresh") covers any service that issues a
+// short-lived access token + a longer-lived refresh token and exposes a refresh
+// endpoint. Fill the settings to match the service's actual auth shape.
+[
+  {
+    "id": "example-service",
+    "vault_item": "machine-managed/example-service-session",
+    "refresh_margin_seconds": 2700,
+    "ttl_hint_seconds": 3600,
+    "settings": {
+      "base_url": "https://api.example.com/v1",
+      "refresh_path": "auth/refresh",
+      "method": "POST",
+      "access_cookie_name": "AccessToken",
+      "refresh_cookie_name": "RefreshToken",
+      "access_json_field": "accessToken",
+      "refresh_json_field": "refreshToken",
+      "headers": {},
+      "user_agent": ""
+    }
+  }
+]

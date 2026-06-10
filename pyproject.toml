@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sessionkeeper"
+version = "0.1.0"
+description = "Keep custom-login sessions warm by scheduled, vault-backed token refresh."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Dragoș Hont" }]
+# Runtime is intentionally dependency-free (Python stdlib only) to keep the
+# image tiny and the secrets-handling surface auditable.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+sessionkeeper = "sessionkeeper.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
