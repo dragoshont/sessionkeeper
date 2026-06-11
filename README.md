@@ -7,12 +7,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status:** v0.2 — the refresh engine, the recipe **dependency DAG**, the
-> **Azure Key Vault** backend, the per-provider **circuit breaker**, and the
-> autonomous browser-cookie **harvester** (CDP) all ship and are unit-tested
-> (offline, no network). What remains is per-account recipes + a one-time
-> credential seed at deploy time; real targets live in a private overlay, never
-> in this public repo.
+> **Status:** v0.3 — the refresh engine, recipe **dependency DAG**, the
+> **Azure Key Vault** backend (Service-Principal *or* Workload-Identity auth),
+> the per-provider **circuit breaker**, and the autonomous **harvester** —
+> now including an **automated cold-login form-drive** (it logs in *for* you in a
+> warm headful browser over CDP; **no manual login**) — all ship and are
+> unit-tested offline (90 tests, stdlib-only runtime). What remains is per-account
+> recipes + arming the login selectors at deploy time; real targets live in a
+> private overlay, never in this public repo.
 
 ## In plain terms
 
@@ -67,6 +69,90 @@ flowchart LR
     SK -->|state / expiry metrics| Graf[Prometheus → Grafana]
     Graf -.->|auth failed → Sev 3 alert| You((you))
 ```
+
+## Architecture
+
+Stdlib-only runtime (the serving/HTTP, CDP WebSocket, and KV REST clients are all
+hand-rolled on `urllib`/sockets); every transport is injectable, so the whole
+surface is unit-tested **offline** with no browser, no Azure, no network.
+
+The broker has **two arms, split by cost**:
+
+- **Cheap & frequent (no browser):** the provider's own silent refresh keeps the
+  session warm — ~99% of keep-alive. For a token-pair service this is a config-only
+  `http_refresh` adapter; for a cookie service the consuming app refreshes itself.
+- **Expensive & rare (in-pod browser):** the **harvester** drives a *warm* headful
+  browser over CDP to log in automatically (credentials pulled just-in-time from
+  the vault) and harvest the session — only on a cold start or after a refresh
+  chain fully lapses. A relogin storm is bounded by a single-flight lock + circuit
+  breaker; a genuine dead-end raises a Sev-3 alert (never a silent wrong-state).
+
+### Components & boundaries
+
+```mermaid
+flowchart TB
+  subgraph cloud["Vault — Azure Key Vault"]
+    KV[("credentials: svc-username / svc-password<br/>session bundles: svc-account-N-session")]
+  end
+  subgraph cluster["Your cluster"]
+    subgraph slot["warm-browser slot — one pod per account (pod = trust boundary)"]
+      MCP["browser MCP / agent driver<br/>:8080"]
+      HB["headful browser<br/>persistent profile (warm)<br/>CDP 127.0.0.1:9222 — loopback only"]
+      H["sessionkeeper harvester (sidecar)<br/>seed / re-seed ONLY"]
+      MCP -. CDP localhost .-> HB
+      H  -. CDP localhost .-> HB
+    end
+    ESO["secret operator<br/>(read-only sync)"]
+    PMCP["provider MCP<br/>domain tools only · owns steady-state rotation"]
+    OBS["Prometheus → Grafana<br/>Sev-3 on needs-human"]
+    AGENT["agent / LLM<br/>domain tools only — never 'login'"]
+  end
+  H ==>|"write session bundle — identity: read+write"| KV
+  KV ==>|"sync seed — read-only"| ESO ==> PMCP
+  H -.->|"credentials JIT — read"| KV
+  PMCP ==>|"provider API (warm token)"| API["api.&lt;provider&gt;"]
+  AGENT ==>|"domain tools only"| PMCP
+  H -.->|state gauge| OBS
+
+  classDef wr stroke:#c0392b,stroke-width:3px;
+  classDef ro stroke:#27ae60,stroke-width:2px;
+  class H wr
+  class ESO,PMCP ro
+```
+
+CDP is **loopback-only** (Chrome binds `127.0.0.1:9222`), so the harvester runs
+*in the browser pod* as a sidecar — it never exposes the debugger off-pod. The
+**write** identity (harvester, red) is separate from the **read-only** path (the
+secret operator + the consuming MCP, green): least privilege by construction.
+
+### How a session lives
+
+```mermaid
+sequenceDiagram
+    participant H as Harvester (sidecar)
+    participant B as Headful browser
+    participant V as Vault
+    participant M as Provider MCP
+    participant P as Provider API
+    Note over H,B: seed / re-seed — RARE, browser
+    H->>V: read username/password (JIT)
+    H->>B: navigate + fill form + submit (CDP)
+    B-->>H: logged in → cookies (some httpOnly)
+    H->>V: write session bundle
+    Note over V,M: delivery — read-only sync
+    V->>M: seed → access / refresh token
+    Note over M,P: keep-warm — FREQUENT, no browser
+    loop before expiry / on 401
+        M->>P: request (warm token)
+        P-->>M: rotated token (in-memory)
+    end
+    Note over H,M: single rotation owner = the consumer → no race
+    Note over H: refresh chain fully dead → re-seed; else Sev-3 alert
+```
+
+**One rotation owner.** Whichever component refreshes the live token chain owns
+it alone — the harvester only *seeds/re-seeds*, never competes with the
+consumer's steady-state rotation, so the two can't invalidate each other.
 
 ## Where do the rotating tokens live? (in the vault — not here)
 
