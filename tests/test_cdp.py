@@ -105,3 +105,18 @@ def test_navigate_sets_location_and_polls_ready():
     CdpClient(command=fake).navigate("https://example.com/login")
     assert any("location.href" in c for c in calls)
 
+
+def test_navigate_polls_through_not_complete_then_complete():
+    # Forces the time.sleep() poll branch (regression: cdp.py once missed
+    # `import time`, which only blows up when readyState != 'complete' first).
+    states = iter(["", "loading", "complete"])  # set href, then two polls
+
+    def fake(method, params):
+        expr = params.get("expression", "")
+        if "readyState" in expr:
+            return {"result": {"value": next(states, "complete")}}
+        return {"result": {"value": True}}
+
+    # Should return without raising (NameError would surface if time unimported).
+    CdpClient(command=fake, timeout=1.0).navigate("https://example.com/login")
+
