@@ -17,6 +17,7 @@ class Metrics:
         self._state: dict[str, int] = {}
         self._expiry: dict[str, float] = {}
         self._refresh_total: dict[tuple[str, str], int] = {}
+        self._login_total: dict[tuple[str, str], int] = {}
 
     def set_state(self, provider: str, state: int) -> None:
         with self._lock:
@@ -33,6 +34,11 @@ class Metrics:
         with self._lock:
             key = (provider, result)
             self._refresh_total[key] = self._refresh_total.get(key, 0) + 1
+
+    def inc_login(self, provider: str, result: str) -> None:
+        with self._lock:
+            key = (provider, result)
+            self._login_total[key] = self._login_total.get(key, 0) + 1
 
     def render(self) -> str:
         with self._lock:
@@ -52,5 +58,10 @@ class Metrics:
             lines.append("# TYPE sessionkeeper_refresh_total counter")
             for (provider, result), count in sorted(self._refresh_total.items()):
                 lines.append(f'sessionkeeper_refresh_total{{provider="{provider}",result="{result}"}} {count}')
+
+            lines.append("# HELP sessionkeeper_login_total Escalated login (harvester) attempts by outcome.")
+            lines.append("# TYPE sessionkeeper_login_total counter")
+            for (provider, result), count in sorted(self._login_total.items()):
+                lines.append(f'sessionkeeper_login_total{{provider="{provider}",result="{result}"}} {count}')
 
             return "\n".join(lines) + "\n"

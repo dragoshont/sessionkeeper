@@ -7,15 +7,33 @@ import threading
 
 from . import __version__, config
 from .metrics import Metrics
-from .providers import HttpRefreshProvider
+from .providers import BrowserCookieHarvestProvider, HttpRefreshProvider
+from .recipe import RecipeError, order_provider_configs
 from .scheduler import Scheduler
 from .server import serve
 from .vault import VaultClient
+from .vault_azure import AzureKeyVaultClient
+
+log = logging.getLogger("sessionkeeper")
+
+
+def _build_vault(cfg: config.AppConfig):
+    if cfg.vault_backend == "azure_kv":
+        return AzureKeyVaultClient(cfg.vault_url)
+    return VaultClient(cfg.vault_url, api_key=cfg.vault_api_key)
+
+
+def _build_provider(pc: config.ProviderConfig):
+    strategy = str((pc.settings or {}).get("strategy", "http_refresh"))
+    if strategy == "browser_cookie_harvest":
+        return BrowserCookieHarvestProvider(pc)
+    return HttpRefreshProvider(pc)
 
 
 def _build_providers(cfg: config.AppConfig) -> list:
-    # v0.1 has a single adapter type; future adapters select on a settings key.
-    return [HttpRefreshProvider(pc) for pc in cfg.providers]
+    # Keep identity providers warm before their dependents (recipe DAG, §3.1).
+    ordered = order_provider_configs(cfg.providers)
+    return [_build_provider(pc) for pc in ordered]
 
 
 def main() -> int:
@@ -23,7 +41,6 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    log = logging.getLogger("sessionkeeper")
     log.info("sessionkeeper %s starting", __version__)
 
     cfg = config.load()
@@ -31,11 +48,18 @@ def main() -> int:
     ready = threading.Event()
     serve(metrics, cfg.port, ready)
 
-    vault = VaultClient(cfg.vault_url, api_key=cfg.vault_api_key)
-    providers = _build_providers(cfg)
+    vault = _build_vault(cfg)
+    try:
+        providers = _build_providers(cfg)
+    except RecipeError as e:
+        log.error("provider config invalid: %s", e)
+        return 2
     if not providers:
         log.warning("no providers configured (%s) — idling, serving health only",
                     cfg.providers_file)
+    else:
+        log.info("vault backend=%s, %d provider(s): %s",
+                 cfg.vault_backend, len(providers), ", ".join(p.id for p in providers))
 
     scheduler = Scheduler(providers, vault, metrics, interval_seconds=cfg.interval_seconds)
 

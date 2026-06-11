@@ -41,6 +41,11 @@ class ProviderConfig:
     refresh_margin_seconds: int = 45 * 60
     # Fallback lifetime when the access token is not a decodable JWT.
     ttl_hint_seconds: int = 60 * 60
+    # Circuit breaker for the expensive login() arm (spec §8): never relogin more
+    # often than this, and cap total relogins per day, to avoid reCAPTCHA
+    # escalation / account flagging. On the cap, the provider goes needs-human.
+    min_seconds_between_logins: int = 5 * 60
+    max_logins_per_day: int = 24
     settings: dict[str, Any] = field(default_factory=dict)
 
 

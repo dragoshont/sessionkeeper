@@ -2,16 +2,26 @@
 // at /config/providers.json (e.g. from a ConfigMap). Comments are NOT valid
 // JSON — strip them in the real file.
 //
-// This generic adapter ("http_refresh") covers any service that issues a
-// short-lived access token + a longer-lived refresh token and exposes a refresh
-// endpoint. Fill the settings to match the service's actual auth shape.
+// `settings.strategy` selects the adapter:
+//   "http_refresh"           — service issues access+refresh tokens + a refresh
+//                              endpoint (the generic, fully config-driven case).
+//   "browser_cookie_harvest" — session lives as cookies (some httpOnly) in a warm
+//                              browser profile; harvested in-pod over CDP.
+//
+// `settings.depends_on` forms a dependency DAG: an identity provider is kept warm
+// before its dependents (cycles + dangling deps are rejected at load).
+//
+// NOTE (public repo): this ships only GENERIC examples against example.com. Real
+// per-account recipes (and any health-provider recipe) live in a PRIVATE overlay,
+// never here. See SECURITY.md and docs/harvester-spec.md §17.
 [
   {
-    "id": "example-service",
-    "vault_item": "machine-managed/example-service-session",
+    "id": "example-http-refresh",
+    "vault_item": "example-http-refresh-session",
     "refresh_margin_seconds": 2700,
     "ttl_hint_seconds": 3600,
     "settings": {
+      "strategy": "http_refresh",
       "base_url": "https://api.example.com/v1",
       "refresh_path": "auth/refresh",
       "method": "POST",
@@ -21,6 +31,23 @@
       "refresh_json_field": "refreshToken",
       "headers": {},
       "user_agent": ""
+    }
+  },
+  {
+    "id": "example-cookie-harvest",
+    "vault_item": "example-cookie-harvest-session",
+    "ttl_hint_seconds": 3600,
+    "min_seconds_between_logins": 300,
+    "max_logins_per_day": 24,
+    "settings": {
+      "strategy": "browser_cookie_harvest",
+      "cdp_url": "http://127.0.0.1:9222",
+      "profile": "playwright-primary",
+      "domains": ["example.com"],
+      "success_when": { "cookie": "ExampleSessionToken" },
+      "access_cookie_name": "ExampleSessionToken",
+      "refresh_cookie_name": "ExampleRefreshToken",
+      "mfa": { "expected": false, "on_blocked": "alert_sev3" }
     }
   }
 ]
