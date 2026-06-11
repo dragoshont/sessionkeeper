@@ -87,7 +87,8 @@ def test_login_drives_form_with_vault_creds_and_harvests():
         clock=lambda: 1000.0, sleep=lambda s: None,
     )
     sess = p.login()
-    assert browser.navigated == ["https://www.reginamaria.ro/login"]
+    assert browser.navigated[0] == "https://www.reginamaria.ro/login"
+    assert browser.navigated[-1] == "about:blank"  # parked after harvest
     assert sess.access_token == "AAA"
     assert sess.refresh_token == "BBB"
     # Credentials are typed via type_text (raw), and submit is clicked.
