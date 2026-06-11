@@ -142,6 +142,44 @@ class CdpClient:
         inner = result.get("result", {}) if isinstance(result, dict) else {}
         return inner.get("value")
 
+    def focus(self, selector: str) -> bool:
+        """Focus an element by CSS selector. Returns False if it isn't present."""
+        return self.eval_js(
+            "(function(){var e=document.querySelector(" + json.dumps(selector) + ");"
+            "if(!e){return false;} e.focus(); "
+            "try{e.setSelectionRange&&e.setSelectionRange(0,(e.value||'').length);}catch(_){} "
+            "return document.activeElement===e;})()"
+        ) is True
+
+    def type_text(self, selector: str, text: str) -> bool:
+        """Type ``text`` into the element like a real user: focus it, clear it,
+        then emit actual key input via CDP ``Input.insertText``. Unlike setting
+        ``.value`` directly, this fires the native input/change events that
+        framework forms (React/Angular/Kendo) listen to — required for the model
+        to register the value before submit. ``text`` is never logged."""
+        if not self.focus(selector):
+            return False
+        # Clear any existing content (select-all + delete) so we don't append.
+        self.eval_js(
+            "(function(){var e=document.querySelector(" + json.dumps(selector) + ");"
+            "if(e){e.value='';e.dispatchEvent(new Event('input',{bubbles:true}));}})()"
+        )
+        self._command("Input.insertText", {"text": text})
+        # Nudge frameworks that key off change/blur as well.
+        self.eval_js(
+            "(function(){var e=document.querySelector(" + json.dumps(selector) + ");"
+            "if(e){e.dispatchEvent(new Event('input',{bubbles:true}));"
+            "e.dispatchEvent(new Event('change',{bubbles:true}));}})()"
+        )
+        return True
+
+    def click(self, selector: str) -> bool:
+        """Click an element by CSS selector. Returns False if it isn't present."""
+        return self.eval_js(
+            "(function(){var e=document.querySelector(" + json.dumps(selector) + ");"
+            "if(!e){return false;} e.click(); return true;})()"
+        ) is True
+
     def navigate(self, url: str) -> None:
         """Navigate the warm page to ``url`` and best-effort wait for load.
 
