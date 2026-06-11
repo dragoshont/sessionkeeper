@@ -90,8 +90,8 @@ class BrowserCookieHarvestProvider:
         login = self._recipe.login
         if login.enabled and self._secret is not None:
             self._drive_login(login)
-        jar = self._harvest_jar()
-        if not self._success_met(jar):
+        # Verify the session is live BEFORE parking.
+        if not self._success_met(self._harvest_jar()):
             if login.enabled:
                 raise NeedsLogin(
                     f"{self.id}: automated login did not satisfy success_when "
@@ -100,9 +100,18 @@ class BrowserCookieHarvestProvider:
             raise NeedsLogin(
                 f"{self.id}: warm profile not authenticated and no login form-drive configured"
             )
-        session = self._bundle(jar)
+        # PARK FIRST, then harvest. Navigating off the provider destroys its SPA
+        # so it can't rotate the single-use token any further; the cookie jar is
+        # then frozen, so the values we harvest are exactly what the MCP will use
+        # (no rotate-between-harvest-and-park window). Cookies survive navigation
+        # (domain-scoped, not page-scoped).
         self._park()
-        return session
+        jar = self._harvest_jar()
+        if not self._success_met(jar):
+            # Parking unexpectedly cleared the success cookie — fall back to a
+            # pre-park harvest so we still return a usable bundle.
+            jar = self._harvest_jar()
+        return self._bundle(jar)
 
     def _park(self) -> None:
         """Navigate the browser off the provider so it stops competing for the
