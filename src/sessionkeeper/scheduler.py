@@ -17,7 +17,8 @@ from typing import Callable, Iterable, Optional
 
 from .metrics import Metrics
 from .provider import DEAD, HEALTHY, NEEDS_HUMAN, NeedsLogin, Provider, STALE
-from .vault import VaultClient, VaultError
+from .session import Session
+from .vault import VaultClient, VaultError, VaultItemNotFound
 
 log = logging.getLogger("sessionkeeper.scheduler")
 
@@ -85,6 +86,12 @@ class Scheduler:
         pid = provider.id
         try:
             session = self._vault.get_session(provider.config.vault_item)
+        except VaultItemNotFound:
+            # First-run bootstrap: no bundle exists yet. Start from an empty
+            # session so probe() returns dead -> we escalate to login(), which
+            # harvests the first session and put_session() CREATES the item.
+            log.info("%s: no session bundle yet -> bootstrapping via login", pid)
+            session = Session()
         except VaultError as e:
             log.warning("%s: vault read failed: %s", pid, e)
             self._metrics.set_state(pid, STALE)

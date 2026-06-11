@@ -1,8 +1,9 @@
 """Scheduler escalation: refresh dead -> harvester login(), guarded by breaker."""
 from sessionkeeper.metrics import Metrics
-from sessionkeeper.provider import HEALTHY, NeedsLogin, ProviderConfig
+from sessionkeeper.provider import DEAD, HEALTHY, NeedsLogin, ProviderConfig
 from sessionkeeper.scheduler import Scheduler
 from sessionkeeper.session import Session
+from sessionkeeper.vault import VaultItemNotFound
 
 
 class FakeVault:
@@ -18,10 +19,23 @@ class FakeVault:
         self.writes.append((item, session))
 
 
+class MissingItemVault:
+    """get_session raises VaultItemNotFound (first-run: no bundle yet)."""
+
+    def __init__(self):
+        self.writes = []
+
+    def get_session(self, item):
+        raise VaultItemNotFound(f"no KV secret named {item!r}")
+
+    def put_session(self, item, session):
+        self.writes.append((item, session))
+
+
 class EscalatingProvider:
     """refresh() always raises NeedsLogin; login() is configurable."""
 
-    def __init__(self, pid, *, login_result=None, login_raises=None, min_gap=300, max_day=24):
+    def __init__(self, pid, *, login_result=None, login_raises=None, min_gap=300, max_day=24, probe_state=HEALTHY):
         self.id = pid
         self.config = ProviderConfig(
             id=pid, vault_item=f"item-{pid}",
@@ -29,10 +43,11 @@ class EscalatingProvider:
         )
         self._login_result = login_result
         self._login_raises = login_raises
+        self._probe_state = probe_state
         self.login_called = 0
 
     def probe(self, session):
-        return HEALTHY, 1000.0 + 60  # within margin -> due -> refresh attempted
+        return self._probe_state, 1000.0 + 60  # within margin -> due -> refresh attempted
 
     def refresh(self, session):
         raise NeedsLogin("refresh token lapsed")
@@ -58,6 +73,19 @@ def test_refresh_dead_escalates_to_login_and_persists():
     out = m.render()
     assert 'sessionkeeper_login_total{provider="p",result="success"}' in out
     assert 'state="healthy"' in out
+
+
+def test_missing_bundle_bootstraps_via_login():
+    # First run: KV has no session item -> must escalate to login to SEED it,
+    # not mark stale and give up (the cold-start chicken-and-egg).
+    p = EscalatingProvider("p", probe_state=DEAD)
+    vault = MissingItemVault()
+    m = Metrics()
+    _sched(p, vault, m).tick()
+    assert p.login_called == 1
+    assert vault.writes and vault.writes[0][0] == "item-p"
+    assert vault.writes[0][1].access_token == "RELOGGED"
+    assert 'state="healthy"' in m.render()
 
 
 def test_login_needs_login_marks_needs_human_and_alerts():
