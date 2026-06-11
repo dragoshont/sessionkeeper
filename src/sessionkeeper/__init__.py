@@ -5,4 +5,4 @@ provider's silent refresh before expiry, and persists the rotated session back
 to the vault. See README.md for the architecture.
 """
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
