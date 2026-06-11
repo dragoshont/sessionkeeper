@@ -153,8 +153,10 @@ def test_login_no_form_drive_falls_back_to_warm_harvest_or_needs_login():
         p.login()
 
 
-def test_login_already_warm_harvests_without_driving_form():
-    # Profile already authenticated: harvest, but still no manual step.
+def test_login_already_warm_harvests_without_typing():
+    # Profile already authenticated (RememberMe auto-login): navigating to the
+    # login URL redirects to the app, no form renders -> harvest the existing
+    # session directly, never type credentials.
     browser = FakeBrowser(authed=True)
     secrets = _secrets(**{"rm-username": "u", "rm-password": "p"})
     p = BrowserCookieHarvestProvider(
@@ -162,7 +164,8 @@ def test_login_already_warm_harvests_without_driving_form():
     )
     sess = p.login()
     assert sess.access_token == "AAA"
-    # It may still navigate/fill (idempotent), but the harvest must succeed.
+    assert not any(e.startswith("type:") for e in browser.evals)  # no form drive
+    assert browser.navigated[-1] == "about:blank"  # still parked
 
 
 def test_refresh_uses_warm_profile_without_login():
