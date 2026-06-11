@@ -127,6 +127,27 @@ def test_click_returns_true_when_present():
     assert CdpClient(command=lambda m, p: {"result": {"value": True}}).click("#go") is True
 
 
+def test_clear_cookies_deletes_each_provider_cookie():
+    cookies = [
+        {"name": "TokenSSO", "value": "x", "domain": "www.reginamaria.ro", "path": "/"},
+        {"name": "RefreshTokenSSO", "value": "y", "domain": ".reginamaria.ro"},
+        {"name": "_GRECAPTCHA", "value": "z", "domain": "www.google.com"},  # not in domains
+    ]
+    deleted = []
+
+    def fake(method, params):
+        if method == "Storage.getCookies":
+            return {"cookies": cookies}
+        if method == "Network.deleteCookies":
+            deleted.append(params["name"])
+            return {}
+        return {}
+
+    n = CdpClient(command=fake).clear_cookies(["reginamaria.ro"])
+    assert n == 2
+    assert set(deleted) == {"TokenSSO", "RefreshTokenSSO"}  # google cookie preserved
+
+
 def test_navigate_sets_location_and_polls_ready():
     calls = []
 

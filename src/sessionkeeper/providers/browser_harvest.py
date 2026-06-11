@@ -128,7 +128,13 @@ class BrowserCookieHarvestProvider:
     # -- internals ------------------------------------------------------------
     def _drive_login(self, login) -> None:
         """Drive the warm headful browser to log in. Credentials pulled JIT from
-        the vault and injected via CDP key input; NEVER logged."""
+        the vault and injected via CDP key input; NEVER logged.
+
+        When the recipe sets ``mint_fresh: true`` (the right choice for providers
+        with single-use rotating refresh tokens, e.g. Regina Maria), the browser's
+        provider cookies are cleared FIRST so a brand-new token is minted by a
+        real form login — never harvesting a session the browser may already have
+        rotated past (which would seed the consumer a dead token)."""
         username = self._secret(login.username_ref)
         password = self._secret(login.password_ref)
         if not username or not password:
@@ -136,12 +142,15 @@ class BrowserCookieHarvestProvider:
                 f"{self.id}: missing credentials in vault "
                 f"({login.username_ref!r}/{login.password_ref!r})"
             )
+        mint_fresh = bool((self.config.settings or {}).get("mint_fresh", False))
+        if mint_fresh and self._recipe.domains:
+            n = self._cdp.clear_cookies(list(self._recipe.domains))
+            log.info("%s: mint_fresh -> cleared %d provider cookie(s) to force a fresh login", self.id, n)
         self._cdp.navigate(login.url)
         # A warm profile may already be authenticated (RememberMe auto-login) —
-        # then the login URL redirects to the app and no form renders. In that
-        # case the existing session is valid (the app loaded), so skip the form
-        # drive and harvest it directly.
-        if self._success_met(self._harvest_jar()):
+        # then the login URL redirects to the app and no form renders. Unless
+        # mint_fresh forced a logout above, harvest that existing session directly.
+        if not mint_fresh and self._success_met(self._harvest_jar()):
             log.info("%s: warm profile already authenticated; harvesting existing session", self.id)
             return
         log.info("%s: warm profile logged out -> automated login drive", self.id)

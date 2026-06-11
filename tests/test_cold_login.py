@@ -42,6 +42,11 @@ class FakeBrowser:
             self._authed = True
         return True
 
+    def clear_cookies(self, domains):
+        self.evals.append("clear_cookies:" + ",".join(domains))
+        self._authed = False  # logged out -> form will render
+        return 2
+
     def get_cookies(self, domains=None):
         if not self._authed:
             return []
@@ -151,6 +156,23 @@ def test_login_no_form_drive_falls_back_to_warm_harvest_or_needs_login():
     )
     with pytest.raises(NeedsLogin, match="no login form-drive configured"):
         p.login()
+
+
+def test_login_mint_fresh_clears_cookies_and_drives_form_even_if_authed():
+    # mint_fresh: even an already-authenticated profile must be logged out + the
+    # form re-driven so a brand-new single-use token is minted (not a stale one
+    # the browser may already have rotated past).
+    browser = FakeBrowser(authed=True)  # starts authenticated
+    secrets = _secrets(**{"rm-username": "u", "rm-password": "p"})
+    cfg = _cfg()
+    cfg.settings["mint_fresh"] = True
+    p = BrowserCookieHarvestProvider(
+        cfg, cdp=browser, secret_resolver=secrets, clock=lambda: 1.0, sleep=lambda s: None,
+    )
+    sess = p.login()
+    assert sess.access_token == "AAA"
+    assert any(e.startswith("clear_cookies:") for e in browser.evals)  # forced logout
+    assert any(e.startswith("type:") for e in browser.evals)           # drove the form
 
 
 def test_login_already_warm_harvests_without_typing():
