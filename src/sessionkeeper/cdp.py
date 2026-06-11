@@ -126,6 +126,30 @@ class CdpClient:
                 out.append(c)
         return out
 
+    def clear_cookies(self, domains: list[str]) -> int:
+        """Delete every cookie on ``domains`` (e.g. to force a fresh login that
+        MINTS a brand-new single-use token, instead of reusing a possibly
+        already-rotated session). Only the provider's own cookies are removed —
+        third-party reCAPTCHA reputation cookies (on google.com) are left intact,
+        so the warm profile keeps passing reCAPTCHA. Returns the count deleted."""
+        victims = self.get_cookies(domains)
+        n = 0
+        for c in victims:
+            name, dom = c.get("name"), c.get("domain")
+            if not name:
+                continue
+            params = {"name": name}
+            if dom:
+                params["domain"] = dom
+            if c.get("path"):
+                params["path"] = c["path"]
+            try:
+                self._command("Network.deleteCookies", params)
+                n += 1
+            except CdpError:
+                pass  # best-effort; a residual cookie just means the form may not appear
+        return n
+
     def eval_js(self, expression: str) -> object:
         """Evaluate JavaScript in the warm page and return the value.
 
