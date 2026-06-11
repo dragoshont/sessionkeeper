@@ -25,6 +25,39 @@ log = logging.getLogger("sessionkeeper.scheduler")
 AlertHook = Callable[[str, str], None]
 
 
+class _LoginBreaker:
+    """Per-provider rate limiter for the expensive login() arm (spec §8).
+
+    Prevents relogin storms (which escalate reCAPTCHA invisible -> hard challenge
+    -> account flag): never relogin more often than ``min_gap`` seconds, and cap
+    total relogins per UTC day. When blocked, the caller goes needs-human rather
+    than hammering the provider.
+    """
+
+    def __init__(self, min_gap_seconds: float, max_per_day: int, clock: Callable[[], float]) -> None:
+        self._min_gap = min_gap_seconds
+        self._max_per_day = max_per_day
+        self._clock = clock
+        self._last: Optional[float] = None
+        self._day = -1
+        self._count = 0
+
+    def allow(self) -> "tuple[bool, str]":
+        now = self._clock()
+        day = int(now // 86400)
+        if day != self._day:
+            self._day, self._count = day, 0
+        if self._count >= self._max_per_day:
+            return False, f"max_logins_per_day={self._max_per_day} reached"
+        if self._last is not None and (now - self._last) < self._min_gap:
+            return False, f"min_seconds_between_logins={self._min_gap:.0f}s not elapsed"
+        return True, ""
+
+    def record(self) -> None:
+        self._last = self._clock()
+        self._count += 1
+
+
 class Scheduler:
     def __init__(
         self,
@@ -45,6 +78,8 @@ class Scheduler:
         self._sleep = sleep
         self._alert = alert
         self._stop = threading.Event()
+        self._breakers: dict[str, _LoginBreaker] = {}
+        self._locks: dict[str, threading.Lock] = {}
 
     def tick_provider(self, provider: Provider) -> None:
         pid = provider.id
@@ -73,7 +108,7 @@ class Scheduler:
         try:
             rotated = provider.refresh(session)
         except NeedsLogin as e:
-            self._needs_human(pid, str(e))
+            self._escalate(provider, str(e))
             return
         except Exception as e:  # noqa: BLE001 — technical failure, retry next tick
             log.warning("%s: refresh failed: %s", pid, e)
@@ -109,6 +144,66 @@ class Scheduler:
 
     def stop(self) -> None:
         self._stop.set()
+
+    # -- escalation: refresh died -> autonomous harvester login (spec §8) -----
+    def _breaker_for(self, provider: Provider) -> _LoginBreaker:
+        b = self._breakers.get(provider.id)
+        if b is None:
+            cfg = provider.config
+            b = _LoginBreaker(cfg.min_seconds_between_logins, cfg.max_logins_per_day, self._clock)
+            self._breakers[provider.id] = b
+        return b
+
+    def _lock_for(self, pid: str) -> threading.Lock:
+        lk = self._locks.get(pid)
+        if lk is None:
+            lk = threading.Lock()
+            self._locks[pid] = lk
+        return lk
+
+    def _escalate(self, provider: Provider, reason: str) -> None:
+        """A cheap refresh raised NeedsLogin: try the expensive login() arm once,
+        guarded by single-flight + circuit breaker. Only a genuine dead-end (or a
+        suppressed/blocked breaker) reaches needs-human -> Sev-3 alert (§6)."""
+        pid = provider.id
+        lock = self._lock_for(pid)
+        if not lock.acquire(blocking=False):
+            log.info("%s: login already in flight; skipping escalation", pid)
+            return
+        try:
+            self._metrics.set_state(pid, DEAD)  # transient while we relogin
+            allowed, why = self._breaker_for(provider).allow()
+            if not allowed:
+                self._needs_human(pid, f"login suppressed ({why}); prior: {reason}")
+                return
+            self._breaker_for(provider).record()
+            self._metrics.inc_login(pid, "attempt")
+            log.info("%s: refresh dead (%s) -> escalating to harvester login", pid, reason)
+            try:
+                session = provider.login()
+            except NeedsLogin as e:
+                self._metrics.inc_login(pid, "needs_human")
+                self._needs_human(pid, str(e))
+                return
+            except Exception as e:  # noqa: BLE001 — technical login failure, retry next tick
+                self._metrics.inc_login(pid, "error")
+                log.warning("%s: harvester login failed: %s", pid, e)
+                self._metrics.set_state(pid, DEAD)
+                return
+            try:
+                self._vault.put_session(provider.config.vault_item, session)
+            except VaultError as e:
+                self._metrics.inc_login(pid, "write_error")
+                log.error("%s: re-logged in but vault write FAILED: %s", pid, e)
+                self._metrics.set_state(pid, STALE)
+                return
+            self._metrics.inc_login(pid, "success")
+            self._metrics.set_state(pid, HEALTHY)
+            _st, exp = provider.probe(session)
+            self._metrics.set_expiry(pid, (exp - self._clock()) if exp is not None else None)
+            log.info("%s: re-logged in via harvester", pid)
+        finally:
+            lock.release()
 
     def _needs_human(self, pid: str, reason: str) -> None:
         log.warning("%s: NEEDS HUMAN re-login: %s", pid, reason)
