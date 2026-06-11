@@ -258,13 +258,17 @@ ever paged (Sev-3) if that automated login genuinely can't complete.
 > in the public repo (see [SECURITY.md](SECURITY.md) and the spec §17). The
 > homelab deploy mounts the real `providers.json` from a private source.
 
+> **Operator guide:** [docs/operating.md](docs/operating.md) covers vault auth
+> (Service Principal vs Workload Identity), the in-pod harvester sidecar, rotation
+> ownership, and a scripted, idempotent bootstrap pattern.
+
 ### 1. Prerequisites (per provider)
 
 | Prereq | What / why |
 |---|---|
 | **Warm headful browser** | A persistent-profile Chromium pod with CDP on `127.0.0.1:9222`, reachable in-pod (loopback only, never exposed). One profile **per account** so sessions stay isolated. reCAPTCHA does not challenge a reputable warm profile — this is why login runs there, never in a cold/fresh profile. |
 | **Credentials in the vault** | The login username + password stored as Azure Key Vault secrets; the recipe references them by name (`username_ref` / `password_ref`). The harvester reads them at login time and **never persists or logs** them. |
-| **Workload Identity on the broker SA** | `Key Vault Secrets Officer` (read the credentials **and** write back the rotated session bundle). Consumers (the MCPs) get `Secrets User` (read-only) via ESO. |
+| **Vault identity for the harvester** | An AAD identity with `Key Vault Secrets Officer` (read the credentials **and** write back the rotated session bundle). Use a **Service Principal** client secret on clusters without a public OIDC issuer (e.g. MicroK8s), or **Workload Identity** on managed clusters — the engine auto-selects (see [docs/operating.md](docs/operating.md)). Consumers get `Secrets User` (read-only). |
 | **NetworkPolicy** | Broker egress to CDP (localhost, same pod) + vault (`:443`) + metrics. **No ingress** except the metrics scraper. |
 | **Dependencies first** | If this provider logs in *through another* (e.g. "Sign in with Google"), the **identity recipe must exist first**. The recipe DAG (`depends_on`) keeps the identity node warm before its dependents and **rejects cycles / dangling deps at load** — author them in dependency order. |
 
