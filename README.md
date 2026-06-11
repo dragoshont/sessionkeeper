@@ -158,12 +158,106 @@ auth**:
 - The system runs **unattended**; the only human touch is acting on the Sev-3
   alert above. There is no Approve/Deny prompt to answer.
 
-## Adding a provider
+## Onboarding a new provider recipe
 
-Each service is one adapter implementing the `probe` / `refresh` / `login`
-contract above, plus a small config entry (vault item names, refresh cadence,
-whether actions need confirmation). The scheduler, vault I/O, metrics, and
-alerting are generic and shared.
+A *recipe* teaches the broker how to keep one service warm. The login is
+**fully automated — there is no manual human login step**: when a session is
+cold, the harvester drives the *warm headful browser* over CDP and logs in
+itself, using credentials pulled just-in-time from the vault. A human is only
+ever paged (Sev-3) if that automated login genuinely can't complete.
+
+> **Where recipes live.** The public repo ships only *generic* example recipes
+> (`config/providers.example.json`). **Real recipes — real domains, account
+> bindings, and especially any health provider — live in a PRIVATE overlay**, never
+> in the public repo (see [SECURITY.md](SECURITY.md) and the spec §17). The
+> homelab deploy mounts the real `providers.json` from a private source.
+
+### 1. Prerequisites (per provider)
+
+| Prereq | What / why |
+|---|---|
+| **Warm headful browser** | A persistent-profile Chromium pod with CDP on `127.0.0.1:9222`, reachable in-pod (loopback only, never exposed). One profile **per account** so sessions stay isolated. reCAPTCHA does not challenge a reputable warm profile — this is why login runs there, never in a cold/fresh profile. |
+| **Credentials in the vault** | The login username + password stored as Azure Key Vault secrets; the recipe references them by name (`username_ref` / `password_ref`). The harvester reads them at login time and **never persists or logs** them. |
+| **Workload Identity on the broker SA** | `Key Vault Secrets Officer` (read the credentials **and** write back the rotated session bundle). Consumers (the MCPs) get `Secrets User` (read-only) via ESO. |
+| **NetworkPolicy** | Broker egress to CDP (localhost, same pod) + vault (`:443`) + metrics. **No ingress** except the metrics scraper. |
+| **Dependencies first** | If this provider logs in *through another* (e.g. "Sign in with Google"), the **identity recipe must exist first**. The recipe DAG (`depends_on`) keeps the identity node warm before its dependents and **rejects cycles / dangling deps at load** — author them in dependency order. |
+
+### 2. Author the recipe (reference-only; no secrets in the file)
+
+Add an entry to the (private) `providers.json`. Two shapes:
+
+**Self-contained login (e.g. a portal with its own form):**
+
+```jsonc
+{
+  "id": "acme-account-a",
+  "vault_item": "acme-account-a-session",   // KV secret the bundle is written to
+  "ttl_hint_seconds": 3600,
+  "min_seconds_between_logins": 300,          // circuit breaker
+  "max_logins_per_day": 24,
+  "settings": {
+    "strategy": "browser_cookie_harvest",
+    "cdp_url": "http://127.0.0.1:9222",
+    "profile": "warm-profile-a",
+    "domains": ["acme.example"],
+    "success_when": { "cookie": "SessionToken" },   // asserted on every harvest
+    "access_cookie_name": "SessionToken",
+    "refresh_cookie_name": "RefreshToken",
+    "login": {                                  // <- enables AUTOMATED login
+      "url": "https://acme.example/login",
+      "username_ref": "acme-a-username",        // KV secret names (values never here)
+      "password_ref": "acme-a-password",
+      "username_selector": "#email",
+      "password_selector": "#password",
+      "submit_selector": "button[type=submit]",
+      "settle_seconds": 1.0,
+      "timeout_seconds": 30.0
+    }
+  }
+}
+```
+
+**Dependent login (rides an identity provider):** add the identity recipe, then
+point the dependent at it with `"depends_on": ["google"]` and the appropriate
+strategy (`oauth_google` / `browser_token_harvest`). The identity recipe is kept
+warm first so one re-login heals all dependents.
+
+If a recipe omits the `login` block, login stays *warm-harvest only* — it can
+harvest an already-authenticated profile but won't drive a form; a logged-out
+profile then pages Sev-3. Provide the `login` block to get hands-off re-login.
+
+### 3. Activate
+
+1. Put the credentials in Key Vault (`username_ref` / `password_ref`).
+2. Commit the recipe to the private overlay; reconcile so the broker mounts it.
+3. On the next tick the keeper sees a cold session → `refresh()` raises
+   `NeedsLogin` → **escalates to `login()`** → the harvester navigates the warm
+   browser, fills the creds, submits, waits for `success_when`, harvests the
+   cookies, and writes the bundle to KV. State → `healthy`. All automatic.
+4. **Verify:** `sessionkeeper_session_state{provider="acme-account-a"} == 0`
+   (healthy) and the KV secret `acme-account-a-session` now holds a bundle.
+5. Deploy the consuming MCP pointed at that KV session secret. It calls domain
+   tools only and never touches auth (see the consumer contract above).
+
+### 4. Strategy cheat-sheet
+
+| `strategy` | Use for | Login mechanism |
+|---|---|---|
+| `browser_cookie_harvest` | portals whose session is cookies (some httpOnly), e.g. Regina Maria | automated form-drive in the warm browser + CDP `Storage.getCookies` |
+| `http_refresh` | services with an access+refresh token pair and a `/refresh` endpoint | config-driven silent refresh (no browser) |
+| `oauth_google` / `browser_token_harvest` | social-login / SPA bearer tokens (e.g. OLX via Google) | depends on an identity recipe; *(roadmap)* |
+
+### Troubleshooting
+
+- **`needs_human` Sev-3 alert** → the automated login couldn't satisfy
+  `success_when` (provider prompted MFA/CAPTCHA, or selectors drifted). Check the
+  selectors against the live page; confirm the warm profile's egress is
+  residential; do not try to defeat a real human gate (spec non-goal).
+- **Target/up `0` in Prometheus** → default ns is default-deny ingress; the app
+  needs an `allow-<app>-ingress` NetworkPolicy from observability/prometheus.
+- **Login storms / CAPTCHA escalation** → that's what `min_seconds_between_logins`
+  + `max_logins_per_day` (the circuit breaker) prevent; never lower them to brute
+  through a block.
 
 ## Roadmap
 
@@ -172,8 +266,11 @@ alerting are generic and shared.
 - **v0.2** ✓ — `needs-human` escalation + autonomous **harvester** `login()`
   (warm browser → CDP cookie harvest), recipe **dependency DAG**, per-provider
   **circuit breaker**, **Azure Key Vault** backend (workload identity).
-- v0.3 — assisted **cold-login** form-drive (the `login()` extension point),
-  `browser_token_harvest` (JS-storage bearer tokens), and the MCP status surface.
+- **v0.3** ✓ — **automated cold-login form-drive** (no manual login: the harvester
+  navigates the warm headful browser and signs in with vault credentials over
+  CDP) + JIT credential pull from the vault.
+- v0.4 — `browser_token_harvest` (JS-storage bearer tokens, OLX) +
+  `oauth_google` dependent logins + the MCP status surface.
 
 ## License
 

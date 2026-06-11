@@ -47,7 +47,17 @@
       "success_when": { "cookie": "ExampleSessionToken" },
       "access_cookie_name": "ExampleSessionToken",
       "refresh_cookie_name": "ExampleRefreshToken",
-      "mfa": { "expected": false, "on_blocked": "alert_sev3" }
+      "mfa": { "expected": false, "on_blocked": "alert_sev3" },
+      "login": {
+        "url": "https://example.com/login",
+        "username_ref": "example-username",
+        "password_ref": "example-password",
+        "username_selector": "#email",
+        "password_selector": "#password",
+        "submit_selector": "button[type=submit]",
+        "settle_seconds": 1.0,
+        "timeout_seconds": 30.0
+      }
     }
   }
 ]

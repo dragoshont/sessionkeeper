@@ -68,3 +68,40 @@ def test_get_cookies_passes_correct_method():
 
     CdpClient(command=fake).get_cookies()
     assert seen["method"] == "Storage.getCookies"
+
+
+def test_eval_js_returns_value():
+    client = CdpClient(command=lambda m, p: {"result": {"type": "string", "value": "complete"}})
+    assert client.eval_js("document.readyState") == "complete"
+
+
+def test_eval_js_sends_runtime_evaluate_with_expression():
+    seen = {}
+
+    def fake(method, params):
+        seen["method"] = method
+        seen["expr"] = params.get("expression")
+        return {"result": {"value": True}}
+
+    CdpClient(command=fake).eval_js("1+1")
+    assert seen["method"] == "Runtime.evaluate"
+    assert seen["expr"] == "1+1"
+
+
+def test_eval_js_raises_on_exception_details():
+    client = CdpClient(command=lambda m, p: {"exceptionDetails": {"text": "ReferenceError"}})
+    with pytest.raises(CdpError, match="threw"):
+        client.eval_js("boom()")
+
+
+def test_navigate_sets_location_and_polls_ready():
+    calls = []
+
+    def fake(method, params):
+        calls.append(params.get("expression", ""))
+        # readyState polls return 'complete' immediately.
+        return {"result": {"value": "complete"}}
+
+    CdpClient(command=fake).navigate("https://example.com/login")
+    assert any("location.href" in c for c in calls)
+

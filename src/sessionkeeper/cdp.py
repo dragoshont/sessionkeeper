@@ -125,6 +125,44 @@ class CdpClient:
                 out.append(c)
         return out
 
+    def eval_js(self, expression: str) -> object:
+        """Evaluate JavaScript in the warm page and return the value.
+
+        Used by the cold-login form-drive to fill credentials + click submit. The
+        expression is NEVER logged (it may carry a password) — see the harvester.
+        Page-domain command, so ``_ws_command`` routes it to the page target.
+        """
+        result = self._command(
+            "Runtime.evaluate",
+            {"expression": expression, "returnByValue": True, "awaitPromise": True},
+        )
+        if isinstance(result, dict) and result.get("exceptionDetails"):
+            raise CdpError(f"Runtime.evaluate threw: {result['exceptionDetails']}")
+        inner = result.get("result", {}) if isinstance(result, dict) else {}
+        return inner.get("value")
+
+    def navigate(self, url: str) -> None:
+        """Navigate the warm page to ``url`` and best-effort wait for load.
+
+        Driven via ``window.location`` + a ``document.readyState`` poll so only
+        the Runtime domain is needed (no Page-domain event subscription).
+        """
+        self.eval_js(f"window.location.href = {json.dumps(url)}; true")
+        for _ in range(40):  # ~ up to timeout, polled
+            try:
+                state = self.eval_js("document.readyState")
+            except CdpError:
+                state = None
+            if state == "complete":
+                return
+            time.sleep(0.25)
+
+    def current_url(self) -> str:
+        try:
+            return str(self.eval_js("location.href") or "")
+        except CdpError:
+            return ""
+
     # -- real CDP-over-WebSocket transport -----------------------------------
     def _browser_ws_url(self) -> str:
         with urlopen(f"{self._base}/json/version", timeout=self._timeout) as resp:
@@ -134,11 +172,31 @@ class CdpClient:
             raise CdpError("no webSocketDebuggerUrl from /json/version")
         return url
 
+    def _page_ws_url(self) -> str:
+        """webSocketDebuggerUrl of the first ``page`` target (create one if none).
+
+        Page/Runtime/DOM/Input commands must target a page, not the browser.
+        """
+        with urlopen(f"{self._base}/json", timeout=self._timeout) as resp:
+            targets = json.loads(resp.read().decode("utf-8", "replace"))
+        for t in targets if isinstance(targets, list) else []:
+            if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+                return t["webSocketDebuggerUrl"]
+        with urlopen(f"{self._base}/json/new", timeout=self._timeout) as resp:
+            t = json.loads(resp.read().decode("utf-8", "replace"))
+        url = t.get("webSocketDebuggerUrl")
+        if not url:
+            raise CdpError("no page target available and /json/new returned none")
+        return url
+
     def _ws_command(self, method: str, params: dict) -> dict:
         import base64
         from urllib.parse import urlparse
 
-        ws_url = self._browser_ws_url()
+        # Page/Runtime/DOM/Input act on a page target; everything else (Storage,
+        # Target, Browser) on the browser endpoint.
+        page_domain = method.split(".", 1)[0] in ("Runtime", "Page", "DOM", "Input")
+        ws_url = self._page_ws_url() if page_domain else self._browser_ws_url()
         parsed = urlparse(ws_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 9222

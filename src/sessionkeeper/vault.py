@@ -83,6 +83,13 @@ class VaultClient:
         login = item.get("login") or {}
         return Session(access_token=login.get("password", "") or "")
 
+    def get_secret(self, item_name: str) -> str:
+        """Return a raw secret value (login.password) JIT for the cold-login
+        form-drive. Never persisted, never logged (parity with the KV backend)."""
+        item = self._find_item(item_name)
+        login = item.get("login") or {}
+        return login.get("password", "") or ""
+
     def put_session(self, item_name: str, session: Session) -> None:
         """Persist the rotated session back onto the item (read-modify-write)."""
         item = self._find_item(item_name)

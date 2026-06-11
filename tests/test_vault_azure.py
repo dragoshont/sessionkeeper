@@ -96,3 +96,18 @@ def test_put_session_http_error_raises_vault_error():
     kv = AzureKeyVaultClient("https://vault.vault.azure.net", transport=http, token_provider=lambda: "t")
     with pytest.raises(VaultError, match="HTTP 403"):
         kv.put_session("rm-session", Session(access_token="x"))
+
+
+def test_get_secret_returns_raw_value():
+    http = FakeHTTP([
+        (lambda m, u: m == "GET" and "/secrets/rm-password" in u, (200, {}, {"value": "s3cr3t"})),
+    ])
+    kv = AzureKeyVaultClient("https://vault.vault.azure.net", transport=http, token_provider=lambda: "t")
+    assert kv.get_secret("rm-password") == "s3cr3t"
+
+
+def test_get_secret_404_raises_not_found():
+    http = FakeHTTP([(lambda m, u: True, (404, {}, '{"error":{"code":"SecretNotFound"}}'))])
+    kv = AzureKeyVaultClient("https://vault.vault.azure.net", transport=http, token_provider=lambda: "t")
+    with pytest.raises(VaultItemNotFound):
+        kv.get_secret("missing")

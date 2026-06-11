@@ -125,6 +125,21 @@ class AzureKeyVaultClient:
         value = (json.loads(text) if text.strip() else {}).get("value", "")
         return Session.from_json(value)
 
+    def get_secret(self, item_name: str) -> str:
+        """Return a raw secret value (e.g. a username or password) JIT.
+
+        Used by the harvester's cold-login form-drive: credentials are pulled at
+        the moment of login and never persisted (spec §7). The value is never
+        logged. Distinct from ``get_session`` (which parses a Session bundle).
+        """
+        url = f"{self._base}/secrets/{urllib.parse.quote(item_name)}?api-version={self._api}"
+        status, _rh, text = self._http("GET", url, self._headers(), None)
+        if status == 404:
+            raise VaultItemNotFound(f"no KV secret named {item_name!r}")
+        if status >= 400:
+            raise VaultError(f"KV get {item_name!r} -> HTTP {status}: {text[:200]}")
+        return (json.loads(text) if text.strip() else {}).get("value", "") or ""
+
     def put_session(self, item_name: str, session: Session) -> None:
         url = f"{self._base}/secrets/{urllib.parse.quote(item_name)}?api-version={self._api}"
         body = json.dumps({"value": session.to_json()}).encode()
