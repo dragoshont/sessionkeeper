@@ -2,14 +2,23 @@
 
 sessionkeeper is the **rotation owner**, so it both reads and *writes* rotated
 session bundles. ESO only syncs KV->cluster one-way for the consuming MCPs; the
-write-back path is this client, talking the KV REST API directly and
-authenticating with **Azure Workload Identity** (a federated ServiceAccount token
-exchanged for an AAD token — no static client secret on disk).
+write-back path is this client, talking the KV REST API directly.
 
+**Auth (two modes, pick by environment):**
+
+* ``ServicePrincipalToken`` — client-credentials with a **client secret**
+  (``AZURE_TENANT_ID``/``AZURE_CLIENT_ID``/``AZURE_CLIENT_SECRET``). This is the
+  default and matches how the homelab's External Secrets Operator already
+  authenticates to the same vault (``authType: ServicePrincipal``). Use this on
+  clusters without a publicly reachable OIDC issuer (e.g. MicroK8s, whose
+  service-account-issuer is the internal ``kubernetes.default.svc``).
+* ``WorkloadIdentityToken`` — federated SA token -> AAD, no static secret. Only
+  works where AAD can validate the cluster's OIDC tokens. Kept for portability.
+
+``make_token_provider()`` picks SP when a client secret is present, else WI.
 Interface mirrors ``vault.VaultClient`` (``get_session`` / ``put_session`` /
-``VaultError``) so it is a drop-in. The whole ``Session`` JSON is stored as the
-secret value. Both the HTTP transport and the token provider are injectable so
-the request shaping is unit-tested offline with no Azure and no network.
+``get_secret`` / ``VaultError``) so it is a drop-in. Both the HTTP transport and
+the token provider are injectable so request shaping is unit-tested offline.
 """
 from __future__ import annotations
 
@@ -93,6 +102,75 @@ class WorkloadIdentityToken:
         return token
 
 
+class ServicePrincipalToken:
+    """Acquire (and cache) an AAD access token via the client-credentials grant
+    with a **client secret** — the same auth the homelab ESO uses against this
+    vault. Reads ``AZURE_TENANT_ID`` / ``AZURE_CLIENT_ID`` / ``AZURE_CLIENT_SECRET``
+    from the environment (mounted from a SOPS-encrypted Secret). No federation,
+    no public OIDC issuer required.
+    """
+
+    def __init__(
+        self,
+        *,
+        transport: Transport = urllib_transport,
+        scope: str = "https://vault.azure.net/.default",
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._http = transport
+        self._scope = scope
+        self._clock = clock
+        self._token = ""
+        self._exp = 0.0
+
+    def __call__(self) -> str:
+        now = self._clock()
+        if self._token and now < self._exp - 60:
+            return self._token
+        tenant = os.environ.get("AZURE_TENANT_ID")
+        client_id = os.environ.get("AZURE_CLIENT_ID")
+        client_secret = os.environ.get("AZURE_CLIENT_SECRET")
+        authority = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com").rstrip("/")
+        if not (tenant and client_id and client_secret):
+            raise VaultError(
+                "service principal not configured "
+                "(AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET)"
+            )
+        body = urllib.parse.urlencode(
+            {
+                "client_id": client_id,
+                "grant_type": "client_credentials",
+                "client_secret": client_secret,
+                "scope": self._scope,
+            }
+        ).encode()
+        status, _rh, text = self._http(
+            "POST",
+            f"{authority}/{tenant}/oauth2/v2.0/token",
+            {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            body,
+        )
+        if status >= 400:
+            raise VaultError(f"AAD token (SP) failed HTTP {status}: {text[:200]}")
+        data = json.loads(text) if text.strip() else {}
+        token = data.get("access_token")
+        if not token:
+            raise VaultError("AAD token response had no access_token")
+        self._token = token
+        self._exp = now + float(data.get("expires_in", 3600))
+        return token
+
+
+def make_token_provider(
+    *, transport: Transport = urllib_transport, clock: Callable[[], float] = time.time
+) -> TokenProvider:
+    """Pick the AAD token provider from the environment: Service Principal when a
+    client secret is present (the homelab default), else Workload Identity."""
+    if os.environ.get("AZURE_CLIENT_SECRET"):
+        return ServicePrincipalToken(transport=transport, clock=clock)
+    return WorkloadIdentityToken(transport=transport, clock=clock)
+
+
 class AzureKeyVaultClient:
     def __init__(
         self,
@@ -106,7 +184,7 @@ class AzureKeyVaultClient:
             raise ValueError("vault_url is required, e.g. https://<name>.vault.azure.net")
         self._base = vault_url.rstrip("/")
         self._http = transport
-        self._token = token_provider or WorkloadIdentityToken(transport=transport)
+        self._token = token_provider or make_token_provider(transport=transport)
         self._api = api_version
 
     def _headers(self, *, json_body: bool = False) -> dict:
