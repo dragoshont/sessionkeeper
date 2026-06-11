@@ -131,12 +131,16 @@ def test_navigate_sets_location_and_polls_ready():
     calls = []
 
     def fake(method, params):
-        calls.append(params.get("expression", ""))
-        # readyState polls return 'complete' immediately.
+        calls.append((method, params))
+        if method == "Page.navigate":
+            return {"frameId": "f1"}
         return {"result": {"value": "complete"}}
 
     CdpClient(command=fake).navigate("https://example.com/login")
-    assert any("location.href" in c for c in calls)
+    methods = [m for m, _ in calls]
+    assert "Page.navigate" in methods
+    nav = next(p for m, p in calls if m == "Page.navigate")
+    assert nav["url"] == "https://example.com/login"
 
 
 def test_navigate_polls_through_not_complete_then_complete():

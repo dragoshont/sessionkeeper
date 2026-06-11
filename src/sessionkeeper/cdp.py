@@ -183,15 +183,22 @@ class CdpClient:
     def navigate(self, url: str) -> None:
         """Navigate the warm page to ``url`` and best-effort wait for load.
 
-        Driven via ``window.location`` + a ``document.readyState`` poll so only
-        the Runtime domain is needed (no Page-domain event subscription).
+        Uses the CDP ``Page.navigate`` command (robust even when the page is a
+        SPA actively navigating — a ``window.location`` eval can race that and
+        throw "Inspected target navigated or closed"). Then polls
+        ``document.readyState`` to completion, tolerating transient eval errors
+        while the new document commits.
         """
-        self.eval_js(f"window.location.href = {json.dumps(url)}; true")
+        try:
+            self._command("Page.navigate", {"url": url})
+        except CdpError:
+            # Fallback for command layers without Page domain (e.g. test fakes).
+            self.eval_js(f"window.location.href = {json.dumps(url)}; true")
         for _ in range(40):  # ~ up to timeout, polled
             try:
                 state = self.eval_js("document.readyState")
             except CdpError:
-                state = None
+                state = None  # mid-navigation; keep polling
             if state == "complete":
                 return
             time.sleep(0.25)

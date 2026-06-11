@@ -79,7 +79,14 @@ class BrowserCookieHarvestProvider:
         """Autonomous (re)login. If the recipe carries a ``login`` form-drive and
         a secret resolver is wired, log in automatically in the warm headful
         browser; otherwise only an already-authenticated profile can be harvested.
-        A genuine dead-end raises NeedsLogin -> Sev-3 alert (spec §6)."""
+        A genuine dead-end raises NeedsLogin -> Sev-3 alert (spec §6).
+
+        After a successful harvest the browser is **parked** off the provider
+        (``park_url``, default about:blank) so its SPA stops background-refreshing
+        the provider's single-use rotating refresh token — otherwise the browser
+        and the consuming MCP both rotate the same chain and invalidate each
+        other (the rotation race, spec §4). Parking makes the MCP the sole
+        rotation owner."""
         login = self._recipe.login
         if login.enabled and self._secret is not None:
             self._drive_login(login)
@@ -93,7 +100,21 @@ class BrowserCookieHarvestProvider:
             raise NeedsLogin(
                 f"{self.id}: warm profile not authenticated and no login form-drive configured"
             )
-        return self._bundle(jar)
+        session = self._bundle(jar)
+        self._park()
+        return session
+
+    def _park(self) -> None:
+        """Navigate the browser off the provider so it stops competing for the
+        rotating token. Best-effort: never fail a successful harvest over this."""
+        park_url = str((self.config.settings or {}).get("park_url", "about:blank"))
+        if not park_url:
+            return
+        try:
+            self._cdp.navigate(park_url)
+            log.info("%s: browser parked at %s (MCP is now sole rotator)", self.id, park_url)
+        except Exception as e:  # noqa: BLE001 — parking is best-effort
+            log.warning("%s: could not park browser: %s", self.id, e)
 
     # -- internals ------------------------------------------------------------
     def _drive_login(self, login) -> None:
