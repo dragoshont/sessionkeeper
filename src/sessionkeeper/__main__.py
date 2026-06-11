@@ -23,17 +23,19 @@ def _build_vault(cfg: config.AppConfig):
     return VaultClient(cfg.vault_url, api_key=cfg.vault_api_key)
 
 
-def _build_provider(pc: config.ProviderConfig):
+def _build_provider(pc: config.ProviderConfig, vault):
     strategy = str((pc.settings or {}).get("strategy", "http_refresh"))
     if strategy == "browser_cookie_harvest":
-        return BrowserCookieHarvestProvider(pc)
+        # The harvester pulls login credentials JIT from the vault (cold-login
+        # form-drive) and never persists them.
+        return BrowserCookieHarvestProvider(pc, secret_resolver=vault.get_secret)
     return HttpRefreshProvider(pc)
 
 
-def _build_providers(cfg: config.AppConfig) -> list:
+def _build_providers(cfg: config.AppConfig, vault) -> list:
     # Keep identity providers warm before their dependents (recipe DAG, §3.1).
     ordered = order_provider_configs(cfg.providers)
-    return [_build_provider(pc) for pc in ordered]
+    return [_build_provider(pc, vault) for pc in ordered]
 
 
 def main() -> int:
@@ -50,7 +52,7 @@ def main() -> int:
 
     vault = _build_vault(cfg)
     try:
-        providers = _build_providers(cfg)
+        providers = _build_providers(cfg, vault)
     except RecipeError as e:
         log.error("provider config invalid: %s", e)
         return 2

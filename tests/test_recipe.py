@@ -3,6 +3,7 @@ import pytest
 
 from sessionkeeper.provider import ProviderConfig
 from sessionkeeper.recipe import (
+    LoginForm,
     MfaPolicy,
     Recipe,
     RecipeError,
@@ -65,6 +66,35 @@ def test_recipe_defaults_to_http_refresh_no_mfa_gate():
     assert r.strategy == "http_refresh"
     assert r.depends_on == ()
     assert r.mfa.on_blocked == "alert_sev3"  # never an Approve/Deny gate
+    assert r.login.enabled is False  # no automated login unless configured
+
+
+def test_recipe_parses_login_form_drive():
+    pc = ProviderConfig(
+        id="rm",
+        vault_item="rm-session",
+        settings={
+            "strategy": "browser_cookie_harvest",
+            "login": {
+                "url": "https://www.reginamaria.ro/login",
+                "username_ref": "rm-username",
+                "password_ref": "rm-password",
+                "username_selector": "#email",
+                "password_selector": "#password",
+                "submit_selector": "button[type=submit]",
+            },
+        },
+    )
+    r = Recipe.from_provider_config(pc)
+    assert isinstance(r.login, LoginForm)
+    assert r.login.enabled is True
+    assert r.login.url == "https://www.reginamaria.ro/login"
+    assert r.login.password_ref == "rm-password"
+
+
+def test_login_form_not_enabled_when_incomplete():
+    # Missing selectors -> not enabled (won't attempt an automated login).
+    assert LoginForm(url="https://x", username_ref="u", password_ref="p").enabled is False
 
 
 def test_order_provider_configs_orders_by_depends_on():

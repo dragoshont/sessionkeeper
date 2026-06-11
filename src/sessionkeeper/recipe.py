@@ -37,6 +37,34 @@ class MfaPolicy:
 
 
 @dataclass(frozen=True)
+class LoginForm:
+    """Automated cold-login form-drive (no manual human login).
+
+    When present on a recipe, the harvester drives the warm headful browser to
+    log in itself: navigate to ``url``, fill the username/password fields (values
+    pulled JIT from the vault by ``username_ref`` / ``password_ref``), click
+    submit, and wait for ``success_when`` (recipe-level) to hold. Credentials are
+    never persisted or logged. reCAPTCHA is avoided by running in the *warm*
+    persistent profile (proven: no challenge appears there), never a cold profile.
+    """
+
+    url: str = ""
+    username_ref: str = ""
+    password_ref: str = ""
+    username_selector: str = ""
+    password_selector: str = ""
+    submit_selector: str = ""
+    settle_seconds: float = 1.0
+    timeout_seconds: float = 30.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url and self.username_ref and self.password_ref
+                    and self.username_selector and self.password_selector
+                    and self.submit_selector)
+
+
+@dataclass(frozen=True)
 class Recipe:
     id: str
     strategy: str
@@ -45,12 +73,14 @@ class Recipe:
     success_when: dict[str, Any] = field(default_factory=dict)
     profile: str = ""
     mfa: MfaPolicy = field(default_factory=MfaPolicy)
+    login: LoginForm = field(default_factory=LoginForm)
     settings: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_provider_config(cls, cfg: ProviderConfig) -> "Recipe":
         s = cfg.settings or {}
         mfa_raw = s.get("mfa") or {}
+        login_raw = s.get("login") or {}
         return cls(
             id=cfg.id,
             strategy=str(s.get("strategy", "http_refresh")),
@@ -61,6 +91,16 @@ class Recipe:
             mfa=MfaPolicy(
                 expected=bool(mfa_raw.get("expected", False)),
                 on_blocked=str(mfa_raw.get("on_blocked", "alert_sev3")),
+            ),
+            login=LoginForm(
+                url=str(login_raw.get("url", "")),
+                username_ref=str(login_raw.get("username_ref", "")),
+                password_ref=str(login_raw.get("password_ref", "")),
+                username_selector=str(login_raw.get("username_selector", "")),
+                password_selector=str(login_raw.get("password_selector", "")),
+                submit_selector=str(login_raw.get("submit_selector", "")),
+                settle_seconds=float(login_raw.get("settle_seconds", 1.0)),
+                timeout_seconds=float(login_raw.get("timeout_seconds", 30.0)),
             ),
             settings=s,
         )
