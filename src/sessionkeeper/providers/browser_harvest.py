@@ -108,6 +108,25 @@ class BrowserCookieHarvestProvider:
             )
         log.info("%s: warm profile logged out -> automated login drive", self.id)
         self._cdp.navigate(login.url)
+        settle = max(login.settle_seconds, 0.0)
+        attempts = max(1, int(login.timeout_seconds / settle)) if settle > 0 else 1
+        # Wait for the login form to render. The page may be a SPA that mounts
+        # the inputs AFTER document.readyState=complete, so poll for the username
+        # field to exist before filling (else querySelector returns null).
+        present_js = (
+            "(function(){return !!(document.querySelector("
+            f"{json.dumps(login.username_selector)})"
+            f"&&document.querySelector({json.dumps(login.password_selector)}));}})()"
+        )
+        for _ in range(attempts):
+            if self._cdp.eval_js(present_js) is True:
+                break
+            self._sleep(settle)
+        else:
+            raise NeedsLogin(
+                f"{self.id}: login form did not render within ~{login.timeout_seconds:.0f}s "
+                f"(selectors {login.username_selector!r}/{login.password_selector!r})"
+            )
         # Fill both fields + submit in one eval. Values JSON-encoded so a quote or
         # backslash in a password can't break out of the string or inject script.
         fill_js = (
@@ -131,8 +150,6 @@ class BrowserCookieHarvestProvider:
             raise NeedsLogin(f"{self.id}: login form selectors did not match the page")
         # Poll for the success cookie to appear after the form POST + redirect.
         # Bounded by iteration count (not wall-clock) so it always terminates.
-        settle = max(login.settle_seconds, 0.0)
-        attempts = max(1, int(login.timeout_seconds / settle)) if settle > 0 else 1
         for _ in range(attempts):
             self._sleep(settle)
             if self._success_met(self._harvest_jar()):

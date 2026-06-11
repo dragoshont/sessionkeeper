@@ -7,11 +7,17 @@ from sessionkeeper.session import Session
 
 
 class FakeBrowser:
-    """A fake warm headful browser: logged out until the login form is driven."""
+    """A fake warm headful browser: logged out until the login form is driven.
 
-    def __init__(self, *, authed=False, succeed_on_login=True):
+    Models the two eval kinds the harvester uses: the form-presence check
+    (``!!(document.querySelector(...))``) and the fill+submit (contains
+    ``.click()``). ``form_renders`` lets a test simulate a form that never mounts.
+    """
+
+    def __init__(self, *, authed=False, succeed_on_login=True, form_renders=True):
         self._authed = authed
         self._succeed_on_login = succeed_on_login
+        self._form_renders = form_renders
         self.navigated = []
         self.evals = []
 
@@ -20,9 +26,14 @@ class FakeBrowser:
 
     def eval_js(self, expression):
         self.evals.append(expression)
-        # Simulate the form submit logging the profile in.
-        if "querySelector" in expression and self._succeed_on_login:
-            self._authed = True
+        if "return !!(" in expression:           # form-presence poll
+            return self._form_renders
+        if ".click()" in expression:             # fill + submit
+            if not self._form_renders:
+                return False
+            if self._succeed_on_login:
+                self._authed = True
+            return True
         return True
 
     def get_cookies(self, domains=None):
@@ -85,9 +96,20 @@ def test_login_password_is_json_encoded_not_naively_interpolated():
         _cfg(), cdp=browser, secret_resolver=secrets, clock=lambda: 1.0, sleep=lambda s: None,
     )
     p.login()
-    fill = [e for e in browser.evals if "querySelector" in e][0]
+    fill = [e for e in browser.evals if ".click()" in e][0]
     import json
     assert json.dumps('p"\\;alert(1)') in fill  # safely escaped
+
+
+def test_login_raises_when_form_never_renders():
+    # SPA form never mounts -> the pre-fill presence poll times out -> NeedsLogin.
+    browser = FakeBrowser(authed=False, form_renders=False)
+    secrets = _secrets(**{"rm-username": "u", "rm-password": "p"})
+    p = BrowserCookieHarvestProvider(
+        _cfg(), cdp=browser, secret_resolver=secrets, clock=lambda: 1.0, sleep=lambda s: None,
+    )
+    with pytest.raises(NeedsLogin, match="did not render"):
+        p.login()
 
 
 def test_login_raises_needs_login_when_form_drive_fails_to_authenticate():
