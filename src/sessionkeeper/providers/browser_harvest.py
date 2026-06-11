@@ -127,26 +127,16 @@ class BrowserCookieHarvestProvider:
                 f"{self.id}: login form did not render within ~{login.timeout_seconds:.0f}s "
                 f"(selectors {login.username_selector!r}/{login.password_selector!r})"
             )
-        # Fill both fields + submit in one eval. Values JSON-encoded so a quote or
-        # backslash in a password can't break out of the string or inject script.
-        fill_js = (
-            "(function(){"
-            f"var u=document.querySelector({json.dumps(login.username_selector)});"
-            f"var p=document.querySelector({json.dumps(login.password_selector)});"
-            f"var b=document.querySelector({json.dumps(login.submit_selector)});"
-            "if(!u||!p||!b){return false;}"
-            f"u.focus();u.value={json.dumps(username)};"
-            "u.dispatchEvent(new Event('input',{bubbles:true}));"
-            "u.dispatchEvent(new Event('change',{bubbles:true}));"
-            f"p.focus();p.value={json.dumps(password)};"
-            "p.dispatchEvent(new Event('input',{bubbles:true}));"
-            "p.dispatchEvent(new Event('change',{bubbles:true}));"
-            "b.click();return true;})()"
-        )
-        ok = self._cdp.eval_js(fill_js)
+        # Type credentials like a real user (CDP Input.insertText) so framework
+        # forms (Angular/Kendo/React) register the value, then click submit.
+        # Direct .value assignment does NOT update those models, so the submit
+        # would post an empty form. Credentials are never logged.
+        typed_u = self._cdp.type_text(login.username_selector, username)
+        typed_p = self._cdp.type_text(login.password_selector, password)
+        clicked = self._cdp.click(login.submit_selector)
         # Wipe local refs; never keep credentials in memory longer than needed.
-        username = password = fill_js = ""  # noqa: F841
-        if ok is False:
+        username = password = ""  # noqa: F841
+        if not (typed_u and typed_p and clicked):
             raise NeedsLogin(f"{self.id}: login form selectors did not match the page")
         # Poll for the success cookie to appear after the form POST + redirect.
         # Bounded by iteration count (not wall-clock) so it always terminates.

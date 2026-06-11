@@ -28,12 +28,18 @@ class FakeBrowser:
         self.evals.append(expression)
         if "return !!(" in expression:           # form-presence poll
             return self._form_renders
-        if ".click()" in expression:             # fill + submit
-            if not self._form_renders:
-                return False
-            if self._succeed_on_login:
-                self._authed = True
-            return True
+        return True
+
+    def type_text(self, selector, text):
+        self.evals.append("type:" + selector + "=" + text)
+        return self._form_renders
+
+    def click(self, selector):
+        self.evals.append("click:" + selector)
+        if not self._form_renders:
+            return False
+        if self._succeed_on_login:
+            self._authed = True
         return True
 
     def get_cookies(self, domains=None):
@@ -84,21 +90,25 @@ def test_login_drives_form_with_vault_creds_and_harvests():
     assert browser.navigated == ["https://www.reginamaria.ro/login"]
     assert sess.access_token == "AAA"
     assert sess.refresh_token == "BBB"
-    # The credentials must be JSON-encoded into the eval (never bare).
-    assert any('"user@example.com"' in e for e in browser.evals)
+    # Credentials are typed via type_text (raw), and submit is clicked.
+    assert any(e == "type:#email=user@example.com" for e in browser.evals)
+    assert any(e.startswith("click:") for e in browser.evals)
 
 
-def test_login_password_is_json_encoded_not_naively_interpolated():
-    # A password containing a quote/backslash must not break the eval string.
+def test_login_password_typed_raw_never_embedded_in_js():
+    # The password is sent via CDP Input.insertText (raw protocol field), never
+    # concatenated into a JS eval string — so quotes/backslashes can't break out
+    # or inject script. Assert it reaches type_text raw and is absent from evals
+    # that look like JS (querySelector/eval expressions).
     browser = FakeBrowser(authed=False)
-    secrets = _secrets(**{"rm-username": "u", "rm-password": 'p"\\;alert(1)'})
+    pw = 'p"\\;alert(1)'
+    secrets = _secrets(**{"rm-username": "u", "rm-password": pw})
     p = BrowserCookieHarvestProvider(
         _cfg(), cdp=browser, secret_resolver=secrets, clock=lambda: 1.0, sleep=lambda s: None,
     )
     p.login()
-    fill = [e for e in browser.evals if ".click()" in e][0]
-    import json
-    assert json.dumps('p"\\;alert(1)') in fill  # safely escaped
+    assert any(e == "type:#password=" + pw for e in browser.evals)  # raw
+    assert not any("querySelector" in e and pw in e for e in browser.evals)  # not in JS
 
 
 def test_login_raises_when_form_never_renders():

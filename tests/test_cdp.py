@@ -94,6 +94,39 @@ def test_eval_js_raises_on_exception_details():
         client.eval_js("boom()")
 
 
+def test_type_text_focuses_then_sends_input_insert_text_raw():
+    seen = []
+
+    def fake(method, params):
+        seen.append((method, params))
+        if method == "Runtime.evaluate":
+            return {"result": {"value": True}}  # focus() / clear / events succeed
+        return {}
+
+    ok = CdpClient(command=fake).type_text("#email", 'p@ss"\\x')
+    assert ok is True
+    inserts = [p["text"] for m, p in seen if m == "Input.insertText"]
+    assert inserts == ['p@ss"\\x']  # raw value, no JS escaping
+
+
+def test_type_text_returns_false_when_element_absent():
+    # focus() returns False (element not present) -> no insertText attempted.
+    calls = []
+
+    def fake(method, params):
+        calls.append(method)
+        if method == "Runtime.evaluate":
+            return {"result": {"value": False}}
+        return {}
+
+    assert CdpClient(command=fake).type_text("#missing", "x") is False
+    assert "Input.insertText" not in calls
+
+
+def test_click_returns_true_when_present():
+    assert CdpClient(command=lambda m, p: {"result": {"value": True}}).click("#go") is True
+
+
 def test_navigate_sets_location_and_polls_ready():
     calls = []
 
