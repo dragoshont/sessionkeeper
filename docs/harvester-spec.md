@@ -513,6 +513,18 @@ keep-alive:
 4. Harvester: warm-browser login → CDP harvest → write bundle. Fully autonomous;
    on a genuine dead-end it sets `needs_human` → Sev-3 alert (§6). No approval.
 
+> **Who owns rotation (the single-owner rule).** The cheap `refresh()` arm
+> (steps 1–2) may be run **either** by sessionkeeper's central scheduler **or** by
+> the *consuming MCP* — but **never both** for the same session (a single-use
+> refresh-token chain corrupts if two components rotate it). When a consuming MCP
+> owns steady-state rotation (e.g. a Regina Maria MCP keeping itself warm over pure
+> HTTP), sessionkeeper's recipe for that provider is **seed/re-seed only**: the
+> harvester mints once, **parks** its browser off the provider so the SPA stops
+> background-refreshing, and only re-engages on a dead chain (step 3). "Keep-warm"
+> in that deployment therefore lives in the MCP; the harvester here is the
+> **re-seed** arm. See the consuming MCP's own keep-warm config + the deployment's
+> ARCHITECTURE notes for the per-deployment ownership split.
+
 **Guards (mandatory — these prevent account flagging):**
 - **Single-flight** per (provider, account): at most one in-flight login.
 - **Circuit breaker / debounce:** `min_seconds_between_logins` +
@@ -585,6 +597,7 @@ Triggers (all system- or operator-driven, never agent-driven):
 | JS-storage token (OLX) readable by page XSS | token lives in the provider's own origin (same risk as their app); harvester only reads it in-pod, never exposes to LLM; scrub on all error paths |
 | Identity-dependency cascade (Google dies → many break) | sessionkeeper keeps the **identity node** warm too; one re-login heals all dependents; dependents marked `degraded`, not silently broken (§3.1) |
 | Login exposed to a prompt-injected agent | **login/harvest is never an MCP tool** (§9); the agent can only call domain tools + an optional debounced read-only status probe; it has zero authority to initiate auth |
+| Health masking (`ttl_hint` vs real liveness) | `probe()` reports `healthy` while the success cookie is *present* and within `ttl_hint_seconds` — it does **not** prove the token still validates upstream. A token can be silently dead before `ttl_hint` elapses (provider-side revocation / idle lapse). **Mitigation:** keep `ttl_hint_seconds` ≤ the provider's real idle-life; have the *consuming MCP* exercise the session (keep-warm) so a 401 surfaces fast; on a known-dead session, force re-seed by writing an empty bundle so `probe()` returns `dead`. Do not treat `healthy` as a substitute for an end-to-end probe. |
 | Master-identity compromise (Google) | identity recipes carry the strictest treatment; provider MFA is its own step; smallest blast radius by scope-minimizing downstream tokens |
 | Dependency cycle in recipes | topological sort **rejects cycles** at load; fail loud (§3.1) |
 | Node down > session cap | bookings are human-initiated; dead session caught at use → re-seed; nothing auto depends on always-warm |
