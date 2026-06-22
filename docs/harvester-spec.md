@@ -104,6 +104,11 @@ small set of reusable **strategies**; a recipe picks one and supplies
 selectors/URLs/secret refs. Recipes form a **dependency graph** (§3.1): a recipe
 may `depends_on` an identity provider (e.g. OLX → Google).
 
+> **Provider examples (Regina Maria, OLX, …) are illustrative and unofficial.** sessionkeeper is not
+> affiliated with these services; a recipe only encodes a provider's *public* login form. If you adapt
+> one, use your own credentials, respect that provider's Terms of Service, and run it at your own risk —
+> automated access may be restricted.
+
 ```yaml
 # recipes/reginamaria.yaml — a self-contained login (no dependency)
 id: reginamaria
@@ -113,7 +118,7 @@ browser: playwright-primary             # which warm-profile pod (per-account)
 depends_on: []                          # own login; no identity dependency
 vault:
   backend: azure-kv                      # one vault for all providers (§7)
-  item: medical/reginamaria-session
+  item: medical/reginamaria-session       # the vault secret name you store this session under
 credentials:                            # refs only; never inline secrets
   username_ref: rm-username
   password_ref: rm-password
