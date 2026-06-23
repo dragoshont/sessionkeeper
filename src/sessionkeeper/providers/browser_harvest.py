@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.request
 from typing import Callable, Optional
 
 from ..cdp import CdpClient
@@ -59,10 +60,25 @@ class BrowserCookieHarvestProvider:
         self._cdp = cdp or CdpClient(str(s.get("cdp_url", "http://127.0.0.1:9222")))
         self._access_cookie = s.get("access_cookie_name", "")
         self._refresh_cookie = s.get("refresh_cookie_name", "")
+        # Optional liveness oracle (ADR 0024): the rotator (the consuming MCP /
+        # Tessera) is the only component that truthfully knows whether the refresh
+        # CHAIN is alive. When configured, its verdict overrides the optimistic
+        # ttl_hint timer in probe()/refresh().
+        self._liveness_url = str(s.get("liveness_probe_url", ""))
+        self._liveness_method = str(s.get("liveness_probe_method", "POST")).upper()
+        self._liveness_timeout = float(s.get("liveness_timeout_seconds", 3.0))
+        self._liveness_cache_s = float(s.get("liveness_cache_seconds", 10.0))
+        self._liveness_cache: "tuple[float, Optional[bool]]" = (0.0, None)
 
     # -- contract -------------------------------------------------------------
     def probe(self, session: Session) -> "tuple[int, Optional[float]]":
         if not self._success_met(self._jar_of(session)):
+            return DEAD, None
+        # The success cookie is present, but it can be present while the refresh
+        # chain is dead server-side. If a liveness oracle is configured and the
+        # rotator says the chain is dead, that truth overrides the optimistic
+        # ttl_hint timer (ADR 0024) — the silent-death bug this closes.
+        if self._liveness_url and self._query_liveness() is False:
             return DEAD, None
         harvested_at = session.extra.get("harvested_at")
         base = float(harvested_at) if isinstance(harvested_at, (int, float)) else self._clock()
@@ -70,6 +86,11 @@ class BrowserCookieHarvestProvider:
         return (HEALTHY if exp > self._clock() else STALE), exp
 
     def refresh(self, session: Session) -> Session:
+        # A dead-chain verdict must force the real login() re-seed, not a no-op
+        # re-harvest of the same dead cookies (which would still satisfy
+        # success_when and never heal). See ADR 0024.
+        if self._liveness_url and self._query_liveness() is False:
+            raise NeedsLogin(f"{self.id}: rotator reports session dead; re-seed required")
         jar = self._harvest_jar()
         if not self._success_met(jar):
             raise NeedsLogin(f"{self.id}: warm profile logged out; login required")
@@ -126,6 +147,41 @@ class BrowserCookieHarvestProvider:
             log.warning("%s: could not park browser: %s", self.id, e)
 
     # -- internals ------------------------------------------------------------
+    def _query_liveness(self) -> Optional[bool]:
+        """Ask the rotator (the consuming MCP / Tessera) whether the session's
+        refresh CHAIN is really alive. Returns True/False, or None when no oracle
+        is configured or it cannot be reached/parsed. NEVER raises and never blocks
+        past the timeout — an unknown verdict must not crash or stall keep-warm.
+
+        The verdict is cached for ``liveness_cache_seconds`` so a single tick's
+        probe()+refresh() share ONE upstream call (the oracle may refresh the
+        session server-side, so it must not be hammered). (ADR 0024 / SDD-42.)"""
+        if not self._liveness_url:
+            return None
+        now = self._clock()
+        ts, cached = self._liveness_cache
+        if ts > 0.0 and (now - ts) < self._liveness_cache_s:
+            return cached
+        verdict: Optional[bool] = None
+        try:
+            data = b"{}" if self._liveness_method == "POST" else None
+            req = urllib.request.Request(
+                self._liveness_url,
+                data=data,
+                method=self._liveness_method,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=self._liveness_timeout) as resp:
+                body = resp.read(4096)
+            payload = json.loads(body.decode("utf-8", "replace"))
+            if isinstance(payload, dict) and isinstance(payload.get("alive"), bool):
+                verdict = bool(payload["alive"])
+        except Exception as e:  # noqa: BLE001 — an unknown verdict must never crash the loop
+            log.debug("%s: liveness oracle %s unavailable: %s", self.id, self._liveness_url, e)
+            verdict = None
+        self._liveness_cache = (now, verdict)
+        return verdict
+
     def _drive_login(self, login) -> None:
         """Drive the warm headful browser to log in. Credentials pulled JIT from
         the vault and injected via CDP key input; NEVER logged.
