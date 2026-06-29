@@ -1,8 +1,7 @@
 """Scheduler integration tests with fake vault + fake providers."""
-import time
 
 from sessionkeeper.metrics import Metrics
-from sessionkeeper.provider import DEAD, HEALTHY, NEEDS_HUMAN, NeedsLogin, ProviderConfig, SessionError, STALE
+from sessionkeeper.provider import HEALTHY, NEEDS_HUMAN, NeedsLogin, ProviderConfig, SessionError, STALE
 from sessionkeeper.scheduler import Scheduler
 from sessionkeeper.session import Session
 

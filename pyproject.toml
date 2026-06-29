@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sessionkeeper"
-version = "0.4.0"
+version = "0.4.1"
 description = "Keep custom-login sessions warm by scheduled, vault-backed token refresh."
 readme = "README.md"
 license = { file = "LICENSE" }

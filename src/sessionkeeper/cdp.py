@@ -18,7 +18,7 @@ import os
 import socket
 import struct
 import time
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 from urllib.request import urlopen
 
 # A command seam: (method, params) -> result dict. The real one talks CDP/WS; a

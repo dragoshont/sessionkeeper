@@ -5,7 +5,6 @@ background thread so the scheduler owns the main thread.
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
