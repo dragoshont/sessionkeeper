@@ -147,7 +147,7 @@ sequenceDiagram
         P-->>M: rotated token (in-memory)
     end
     Note over H,M: single rotation owner = the consumer → no race
-    Note over H: refresh chain fully dead → re-seed; else Sev-3 alert
+    Note over H: refresh chain fully dead → re-seed, else Sev-3 alert
 ```
 
 **One rotation owner.** Whichever component refreshes the live token chain owns
