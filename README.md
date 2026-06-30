@@ -63,10 +63,10 @@ flip to `needs-human` and fire a **Sev-3** alert.
 
 ```mermaid
 flowchart LR
-    Vault[(Azure Key Vault)] -->|static keys + last session| SK[sessionkeeper<br/>scheduler + adapters + harvester]
+    Vault[(Azure Key Vault)] -->|static keys + last session| SK["sessionkeeper<br/>scheduler + adapters + harvester"]
     SK -->|silent refresh / CDP harvest keeps it warm| Svc[(Service with custom login)]
     SK -->|rotated session persisted back| Vault
-    SK -->|state / expiry metrics| Graf[Prometheus → Grafana]
+    SK -->|state / expiry metrics| Graf["Prometheus → Grafana"]
     Graf -.->|auth failed → Sev 3 alert| You((you))
 ```
 

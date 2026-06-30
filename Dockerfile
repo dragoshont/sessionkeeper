@@ -4,6 +4,13 @@
 # + the source. Multi-arch (python:slim is published for amd64 + arm64).
 FROM python:3.12-slim
 
+# OCI labels. `image.source` connects the GHCR package to this repository so the
+# repo's Actions GITHUB_TOKEN is authorized to publish it (fixes the
+# `denied: permission_denied: write_package` push failure on an unlinked package).
+LABEL org.opencontainers.image.source="https://github.com/dragoshont/sessionkeeper" \
+      org.opencontainers.image.description="sessionkeeper — stateless refresh engine for custom-login sessions" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     SESSIONKEEPER_PORT=9090
