@@ -148,6 +148,31 @@ def test_clear_cookies_deletes_each_provider_cookie():
     assert set(deleted) == {"TokenSSO", "RefreshTokenSSO"}  # google cookie preserved
 
 
+def test_network_cookie_commands_route_to_page_target():
+    # ROOT CAUSE of the "mint_fresh cleared 0 cookies" outage: Network.* is a
+    # page-domain group, but clear_cookies issues Network.deleteCookies. Routing
+    # it to the browser endpoint (where the Network domain does not exist) makes
+    # every delete throw and get swallowed -> 0 cleared -> the warm profile never
+    # logs out -> the re-login form never renders -> needs-human. These MUST hit a
+    # page target. The fake-command tests above cannot catch this (they answer
+    # regardless of transport) -- only the routing decision can.
+    assert CdpClient._is_page_domain("Network.deleteCookies") is True
+    assert CdpClient._is_page_domain("Network.getCookies") is True
+
+
+def test_storage_and_browser_commands_stay_on_browser_target():
+    # Storage.getCookies is genuinely browser-level (reads ALL cookies, incl.
+    # httpOnly, across the whole jar) -- it must NOT be forced onto a page target.
+    assert CdpClient._is_page_domain("Storage.getCookies") is False
+    assert CdpClient._is_page_domain("Target.getTargets") is False
+    assert CdpClient._is_page_domain("Browser.getVersion") is False
+
+
+def test_page_runtime_input_commands_route_to_page_target():
+    for method in ("Runtime.evaluate", "Page.navigate", "DOM.getDocument", "Input.insertText"):
+        assert CdpClient._is_page_domain(method) is True
+
+
 def test_navigate_sets_location_and_polls_ready():
     calls = []
 

@@ -96,6 +96,20 @@ def _recv_exactly_from(sock: socket.socket) -> Callable[[int], bytes]:
 # -- the client --------------------------------------------------------------
 
 class CdpClient:
+    # CDP domains whose commands must be issued against a *page* target, not the
+    # browser endpoint. ``Network.*`` is the subtle one: cookies are browser-wide,
+    # so ``Network.deleteCookies`` reads like a browser-level call -- but the
+    # Network domain only exists on a page session. Routing it to the browser
+    # endpoint makes every delete throw (silently swallowed by ``clear_cookies``),
+    # which is the "mint_fresh cleared 0 cookies -> never logs out -> login form
+    # never renders -> needs-human" failure. ``Storage.*`` IS browser-level, so
+    # cookie *reads* (``Storage.getCookies``) correctly stay off this list.
+    _PAGE_DOMAINS = ("Runtime", "Page", "DOM", "Input", "Network")
+
+    @staticmethod
+    def _is_page_domain(method: str) -> bool:
+        return method.split(".", 1)[0] in CdpClient._PAGE_DOMAINS
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:9222",
@@ -263,10 +277,9 @@ class CdpClient:
         import base64
         from urllib.parse import urlparse
 
-        # Page/Runtime/DOM/Input act on a page target; everything else (Storage,
-        # Target, Browser) on the browser endpoint.
-        page_domain = method.split(".", 1)[0] in ("Runtime", "Page", "DOM", "Input")
-        ws_url = self._page_ws_url() if page_domain else self._browser_ws_url()
+        # Page/Runtime/DOM/Input/Network act on a page target; everything else
+        # (Storage, Target, Browser) on the browser endpoint. See _PAGE_DOMAINS.
+        ws_url = self._page_ws_url() if self._is_page_domain(method) else self._browser_ws_url()
         parsed = urlparse(ws_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 9222
